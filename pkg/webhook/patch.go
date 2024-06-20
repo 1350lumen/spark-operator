@@ -356,12 +356,9 @@ func addGeneralConfigMaps(pod *corev1.Pod, app *v1beta2.SparkApplication) []patc
 }
 
 func getPrometheusConfigPatches(pod *corev1.Pod, app *v1beta2.SparkApplication) []patchOperation {
-	// Skip if Prometheus Monitoring is not enabled or an in-container ConfigFile is used,
-	// in which cases a Prometheus ConfigMap won't be created.
-	if !app.PrometheusMonitoringEnabled() || (app.HasMetricsPropertiesFile() && app.HasPrometheusConfigFile()) {
+	if !app.PrometheusMonitoringEnabled() {
 		return nil
 	}
-
 	if util.IsDriverPod(pod) && !app.ExposeDriverMetrics() {
 		return nil
 	}
@@ -370,9 +367,22 @@ func getPrometheusConfigPatches(pod *corev1.Pod, app *v1beta2.SparkApplication) 
 	}
 
 	var patchOps []patchOperation
-	name := config.GetPrometheusConfigMapName(app)
-	volumeName := name + "-vol"
-	mountPath := config.PrometheusConfigMapMountPath
+
+	if !app.HasPrometheusConfigFile() {
+		// ConfigFile is not specified in which case a configmap with configuration is created
+		name := config.GetPrometheusConfigMapName(app)
+		volumeName := name + "-vol"
+		mountPath := config.PrometheusConfigMapMountPath
+
+		patchOps = append(patchOps, addConfigMapVolume(pod, name, volumeName))
+		vmPatchOp := addConfigMapVolumeMount(pod, volumeName, mountPath)
+		if vmPatchOp == nil {
+			glog.Warningf("could not mount volume %s in path %s", volumeName, mountPath)
+			return nil
+		}
+		patchOps = append(patchOps, *vmPatchOp)
+	}
+
 	promPort := config.DefaultPrometheusJavaAgentPort
 	if app.Spec.Monitoring.Prometheus.Port != nil {
 		promPort = *app.Spec.Monitoring.Prometheus.Port
@@ -382,14 +392,6 @@ func getPrometheusConfigPatches(pod *corev1.Pod, app *v1beta2.SparkApplication) 
 	if app.Spec.Monitoring.Prometheus.PortName != nil {
 		promPortName = *app.Spec.Monitoring.Prometheus.PortName
 	}
-
-	patchOps = append(patchOps, addConfigMapVolume(pod, name, volumeName))
-	vmPatchOp := addConfigMapVolumeMount(pod, volumeName, mountPath)
-	if vmPatchOp == nil {
-		glog.Warningf("could not mount volume %s in path %s", volumeName, mountPath)
-		return nil
-	}
-	patchOps = append(patchOps, *vmPatchOp)
 	promPortPatchOp := addContainerPort(pod, promPort, promProtocol, promPortName)
 	if promPortPatchOp == nil {
 		glog.Warningf("could not expose port %d to scrape metrics outside the pod", promPort)
